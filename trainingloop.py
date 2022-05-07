@@ -155,44 +155,49 @@ WEIGHT_DECAY = 0.01
 EPOCHS = 10 # Total number of epochs
 L1_WEIGHT = 0.001
 SCHEDULER = None
-BATCH_SIZE = 10
+BATCH_SIZE = 4
+SHUFFLE_NET = True
+MAX_FILESIZE = 40000000
+P = 1
 
 # This is set up to run on colab vvv
 survival_file = 'drive/MyDrive/SlideGraph/NIHMS978596-supplement-1.xlsx'
-cols2read = ['PFI', 'PFI.time']
+cols2read = ['PFI', 'PFI.time'] #['OS','OS.time'] alternative metrics
 TS = pd.read_excel(survival_file).rename(columns= {'bcr_patient_barcode':'ID'}).set_index('ID')  # path to clinical file
 TS = TS[cols2read][TS.type == 'BRCA']
 print(TS.shape)
-#bdir = '/data/Immune_landscape/Slide_Graph_Resnet18/Graph_feats/'
-#bdir = '/data/Immune_landscape/Slide_Graph_ALBRT/Graph_feats_1k/' #Graph_feats_1k/'
 wsi_selected = 'drive/MyDrive/SlideGraph/slide_selection_final.txt'
 filter = np.array(pd.read_csv(wsi_selected)).ravel()
 Pids = np.array([p[:12] for p in filter])
-# print(filter.shape); 
-# import pdb; pdb.set_trace()
-#'/data/Immune_landscape/Slide_Graph_ALBRT_Rank/Graph_feats_CC/' 
 bdir = 'drive/MyDrive/SlideGraph/Graph_feats_CC_CPU/' # path to graphs
-
+if SHUFFLE_NET:
+    bdir = 'drive/MyDrive/SlideGraph/graphs_featuresresnet_cluster_08_1111ERslides/' # alternative path to graphs
 Exid = 'Slide_Graph CC_feats'
 graphlist = glob(os.path.join(bdir, "*.pkl"))#[0:100]
-GN = []
+# GN = [] don't need this
 device = 'cuda:0'
 cpu = torch.device('cpu')
 dataset = []
 pfi_and_times = []
 for graph in tqdm(graphlist):
-    G = pickleLoad(graph)
-    G.to(cpu)
+    if SHUFFLE_NET:
+        filesize = os.path.getsize(graph)
+        if filesize < MAX_FILESIZE:
+            G = torch.load(graph, map_location='cpu')
+            G = Data(**G.__dict__)
+        else:
+            continue
+    else:
+        G = pickleLoad(graph)
+        G.to(cpu)
     TAG = os.path.split(graph)[-1].split('_')[0][:12]
-
     if TAG not in TS.index:
         continue
     if TAG not in Pids:
         continue
-
     status = TS.loc[TAG,:][1]
     pfi, pfi_time = TS.loc[TAG,:][0], TS.loc[TAG,:][1]
-    pfi_and_times.append((pfi,pfi_time))
+    pfi_and_times.append((pfi,pfi_time)) #This needs to be altered so it is part of the graph data structure
     G.y = toTensor([int(status)], dtype=torch.long, requires_grad = False)
     dataset.append(G)
 
@@ -207,6 +212,8 @@ Y = np.array([float(G.y) for G in dataset])
 
 # Split data and find paris for each 75% train 25% test
 # Will look at validation later
+if len(dataset) != len(pfi_and_times):
+    raise ValueError("Inconsistent data values")
 
 num_train = math.floor(0.75 * len(dataset))
 num_test = len(dataset) - num_train
@@ -221,9 +228,13 @@ if len(train_dataset) + len(test_dataset) != len(dataset):
 train_pairs_list = get_pairs(train_pairs)
 test_pairs_list = get_pairs(test_pairs)
 
+print('Total number of examples ' + str(len(dataset)))
+print('Number of training examples ' + str(len(train_dataset)))
+print('Number of test examples ' +str(len(test_dataset)))
+
 #Set up model and optimizer
 model = GNN(dim_features=dataset[0].x.shape[1], dim_target = 1, layers = [16,16,8],
-            dropout = 0.50, pooling = 'mean', conv = 'EdgeConv', aggr = 'max')
+            dropout = 0.15, pooling = 'mean', conv = 'GINConv', aggr = 'max')
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
 #training loop
@@ -246,11 +257,9 @@ for epoch in tqdm(range(0,EPOCHS)):
         data = data.to(device)
         '''
         batch_load = DataLoader(graphs,batch_size=len(graphs))
-        #pdb.set_trace()
         for data in batch_load: #This for has only one iter.
           data = data.to(device)
         output,_,_ = model(data)
-        #pdb.set_trace()
         loss = 0
         z = toTensor(0)
         num_pairs = len(batch_pairs)
@@ -259,7 +268,6 @@ for epoch in tqdm(range(0,EPOCHS)):
             graph_i, graph_j = graph_set.index(xi), graph_set.index(xj)
             #Compute loss function
             dz = output[graph_i] - output[graph_j]   
-            #pdb.set_trace()
             loss += torch.max(z,1.0-dz)
         loss = loss/num_pairs
         '''
@@ -280,29 +288,39 @@ for epoch in tqdm(range(0,EPOCHS)):
 plot_curves(EPOCHS,epoch_loss['train'],'Loss',epoch_acc['train'],'Accuracy')
 
 #Test evaluation on training data
-#Need to alter these so it passes data in batches again and then appends outputs to list
-#Also need to alter these so it takes the pfi_and_times pairs
+#Need to alter this so it passes data in batches again and then appends outputs to list
 model.eval()
-loader = DataLoader(train_dataset,batch_size=len(train_dataset))
-for data in loader: #This for has only one iter.
-  data = data.to(device)
-z,_,_ = model(data)
-T = [train_dataset[i].PFI_TIME.cpu().numpy() for i in range(len(train_dataset))]
-E = [train_dataset[i].PFI.cpu().numpy() for i in range(len(train_dataset))]
-z = z.cpu().detach().numpy()
-concord = cindex(T,z,E)
+outputs = []
+for i in range(0, len(train_dataset),BATCH_SIZE):
+  graphs = train_dataset[i:i+BATCH_SIZE]
+  loader = DataLoader(graphs,batch_size=BATCH_SIZE)
+  for data in loader: #This for has only one iter.
+    data = data.to(device)
+  z,_,_ = model(data)
+  z = z.cpu().detach().numpy()
+  for j in range(len(z)):
+    outputs.append(z[j])
+T = [train_pairs[i][1] for i in range(len(train_pairs))]
+E = [train_pairs[i][0] for i in range(len(train_pairs))]
+#pdb.set_trace()
+concord = cindex(T,outputs,E)
 print(concord)
 
 # Proper evaluation
 model.eval()
-load = DataLoader(test_dataset,batch_size=(len(test_dataset)))
-for data in load:
-  data = data.to(device)
-z,_,_ = model(data)
-T = [test_dataset[i].PFI_TIME.cpu().numpy() for i in range(len(test_dataset))]
-E = [test_dataset[i].PFI.cpu().numpy() for i in range(len(test_dataset))]
-z = z.cpu().detach().numpy()
-concord = cindex(T,z,E)
+test_outputs = []
+for i in range(0, len(test_dataset),BATCH_SIZE):
+  graphs = test_dataset[i:i+BATCH_SIZE]
+  load = DataLoader(graphs,batch_size=BATCH_SIZE)
+  for data in load:
+    data = data.to(device)
+  z,_,_ = model(data)
+  z = z.cpu().detach().numpy()
+  for j in range(len(z)):
+    test_outputs.append(z[j])
+T = [test_pairs[i][1] for i in range(len(test_dataset))]
+E = [test_pairs[i][0] for i in range(len(test_dataset))]
+concord = cindex(T,test_outputs,E)
 print(concord)
 
 
