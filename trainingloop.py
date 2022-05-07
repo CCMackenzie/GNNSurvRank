@@ -142,23 +142,48 @@ def get_pairs(tuples):
 
 def plot_curves(Nepochs, e_metric1, metric1, e_metric2, metric2):
     fig = plt.figure()
-    ax0 = plt.add_subplot(121,metric1)
-    ax1 = plt.add_subplot(121,metric2)
-    ax0.plot(Nepochs,e_metric1)
-    ax1.plot(Nepochs,e_metric2)
+    ax0 = fig.add_subplot(121,metric1)
+    ax1 = fig.add_subplot(121,metric2)
+    x_axis = np.arrange(Nepochs)
+    ax0.plot(x_axis,e_metric1)
+    ax1.plot(x_axis,e_metric2)
     plt.show()
     return None
+
+def validation_loss(val_data, pairs_list):
+    epoch_val_loss = 0
+    model.eval()
+    for j in range(0, len(pairs_list), BATCH_SIZE):
+        b_pairs = pairs_list[j:j+BATCH_SIZE]
+        temp = [idx for pair in b_pairs for idx in pair]
+        g_set = list(set(temp))
+        graphs = [val_data[i] for i in g_set]
+        batch_load = DataLoader(graphs,batch_size = len(graphs))
+        for data in batch_load:
+            data = data.to(device)
+        output,_,_ = model(data)
+        v_loss = 0
+        z = toTensor(0)
+        num_pairs = len(b_pairs)
+        for (xi,xj) in b_pairs:
+            graph_i, graph_j = g_set.index(xi), g_set.index(xj)
+            dz = output[graph_i] - output[graph_j]
+            v_loss += torch.max(z, 1.0 - dz)
+        loss = loss/num_pairs
+        epoch_val_loss += loss.item()
+    return epoch_val_loss
 
 # Set up const vals
 LEARNING_RATE = 0.01
 WEIGHT_DECAY = 0.01
 EPOCHS = 10 # Total number of epochs
 L1_WEIGHT = 0.001
-SCHEDULER = None
 BATCH_SIZE = 4
 SHUFFLE_NET = True
 MAX_FILESIZE = 40000000
 P = 1
+VALIDATION = True
+NORMALIZE = True
 
 # This is set up to run on colab vvv
 survival_file = 'drive/MyDrive/SlideGraph/NIHMS978596-supplement-1.xlsx'
@@ -174,7 +199,7 @@ if SHUFFLE_NET:
     bdir = 'drive/MyDrive/SlideGraph/graphs_featuresresnet_cluster_08_1111ERslides/' # alternative path to graphs
 Exid = 'Slide_Graph CC_feats'
 graphlist = glob(os.path.join(bdir, "*.pkl"))#[0:100]
-# GN = [] don't need this
+GN = []
 device = 'cuda:0'
 cpu = torch.device('cpu')
 dataset = []
@@ -199,7 +224,16 @@ for graph in tqdm(graphlist):
     pfi, pfi_time = TS.loc[TAG,:][0], TS.loc[TAG,:][1]
     pfi_and_times.append((pfi,pfi_time)) #This needs to be altered so it is part of the graph data structure
     G.y = toTensor([int(status)], dtype=torch.long, requires_grad = False)
+    if NORMALIZE:
+        GN.append(G.x)
     dataset.append(G)
+
+if NORMALIZE:
+    GN = torch.cat(GN)
+    Gmean, Gstd = torch.mean(GN,dim=0)+1e-10, torch.std(GN,dim=0)+1e-10
+    GN = None #Free the memory
+    for G in dataset: #Unsure if this should be before or after the loop below
+        G.x = (G.x - Gmean)/Gstd
 
 for i,G in tqdm(enumerate(dataset)):
     W = radius_neighbors_graph(toNumpy(G.coords), 1500, mode='connectivity', include_self=False).toarray()
@@ -231,6 +265,7 @@ test_pairs_list = get_pairs(test_pairs)
 print('Total number of examples ' + str(len(dataset)))
 print('Number of training examples ' + str(len(train_dataset)))
 print('Number of test examples ' +str(len(test_dataset)))
+print('Number of valid pairs for training ' + str(train_pairs_list))
 
 #Set up model and optimizer
 model = GNN(dim_features=dataset[0].x.shape[1], dim_target = 1, layers = [16,16,8],
@@ -282,6 +317,9 @@ for epoch in tqdm(range(0,EPOCHS)):
         e_loss += loss.item()
         acc = 1 - loss.item()
         e_acc += acc
+    if VALIDATION:
+        val_e_loss = validation_loss(test_dataset,test_pairs_list)
+        epoch_loss['test'].append(val_e_loss)
     epoch_loss['train'].append(e_loss)
     epoch_acc['train'].append(e_acc)
 
