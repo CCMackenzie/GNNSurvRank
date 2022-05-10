@@ -140,37 +140,37 @@ def get_pairs(tuples):
   shuffle(pairs_dataset)
   return pairs_dataset
 
-def plot_curves(Nepochs, e_metric1, metric1, e_metric2, metric2):
-    fig = plt.figure()
-    ax0 = fig.add_subplot(121,metric1)
-    ax1 = fig.add_subplot(121,metric2)
-    x_axis = np.arrange(Nepochs)
-    ax0.plot(x_axis,e_metric1)
-    ax1.plot(x_axis,e_metric2)
+def plot_curves(Nepochs, e_metric, metric1):
+    Nepochs = np.arange(Nepochs)
+    plt.plot(Nepochs,e_metric['train'],label = "Training")
+    plt.plot(Nepochs,e_metric['test'], label = "Test")
+    plt.legend()
     plt.show()
     return None
 
 def validation_loss(val_data, pairs_list):
     epoch_val_loss = 0
     model.eval()
-    for j in range(0, len(pairs_list), BATCH_SIZE):
-        b_pairs = pairs_list[j:j+BATCH_SIZE]
-        temp = [idx for pair in b_pairs for idx in pair]
-        g_set = list(set(temp))
-        graphs = [val_data[i] for i in g_set]
-        batch_load = DataLoader(graphs,batch_size = len(graphs))
-        for data in batch_load:
-            data = data.to(device)
-        output,_,_ = model(data)
-        v_loss = 0
-        z = toTensor(0)
-        num_pairs = len(b_pairs)
-        for (xi,xj) in b_pairs:
-            graph_i, graph_j = g_set.index(xi), g_set.index(xj)
-            dz = output[graph_i] - output[graph_j]
-            v_loss += torch.max(z, 1.0 - dz)
-        loss = loss/num_pairs
-        epoch_val_loss += loss.item()
+    with torch.no_grad():
+        for j in range(0, len(pairs_list), BATCH_SIZE):
+            b_pairs = pairs_list[j:j+BATCH_SIZE]
+            temp = [idx for pair in b_pairs for idx in pair]
+            g_set = list(set(temp))
+            graphs = [val_data[i] for i in g_set]
+            batch_load = DataLoader(graphs,batch_size = len(graphs))
+            for data in batch_load:
+                data = data.to(device)
+            output,_,_ = model(data)
+            v_loss = 0
+            z = toTensor(0)
+            num_pairs = len(b_pairs)
+            for (xi,xj) in b_pairs:
+                graph_i, graph_j = g_set.index(xi), g_set.index(xj)
+                dz = output[graph_i] - output[graph_j]
+                v_loss += torch.max(z, 1.0 - dz)
+            v_loss = v_loss/num_pairs
+            epoch_val_loss += loss.item()
+    epoch_val_loss = epoch_val_loss/len(pairs_list)
     return epoch_val_loss
 
 # Set up const vals
@@ -199,7 +199,6 @@ if SHUFFLE_NET:
     bdir = 'drive/MyDrive/SlideGraph/graphs_featuresresnet_cluster_08_1111ERslides/' # alternative path to graphs
 Exid = 'Slide_Graph CC_feats'
 graphlist = glob(os.path.join(bdir, "*.pkl"))#[0:100]
-GN = []
 device = 'cuda:0'
 cpu = torch.device('cpu')
 dataset = []
@@ -224,11 +223,12 @@ for graph in tqdm(graphlist):
     pfi, pfi_time = TS.loc[TAG,:][0], TS.loc[TAG,:][1]
     pfi_and_times.append((pfi,pfi_time)) #This needs to be altered so it is part of the graph data structure
     G.y = toTensor([int(status)], dtype=torch.long, requires_grad = False)
-    if NORMALIZE:
-        GN.append(G.x)
     dataset.append(G)
 
-if NORMALIZE:
+if NORMALIZE: #It looks like this uses huge memory when using shuffle net features will need to re-think this
+    GN = []
+    for graph in dataset:
+        GN.append(G.x)
     GN = torch.cat(GN)
     Gmean, Gstd = torch.mean(GN,dim=0)+1e-10, torch.std(GN,dim=0)+1e-10
     GN = None #Free the memory
@@ -262,10 +262,10 @@ if len(train_dataset) + len(test_dataset) != len(dataset):
 train_pairs_list = get_pairs(train_pairs)
 test_pairs_list = get_pairs(test_pairs)
 
-print('Total number of examples ' + str(len(dataset)))
-print('Number of training examples ' + str(len(train_dataset)))
-print('Number of test examples ' +str(len(test_dataset)))
-print('Number of valid pairs for training ' + str(train_pairs_list))
+print('Total number of examples: ' + str(len(dataset)))
+print('Number of training examples: ' + str(len(train_dataset)))
+print('Number of test examples: ' +str(len(test_dataset)))
+print('Number of valid pairs for training: ' + str(len(train_pairs_list)))
 
 #Set up model and optimizer
 model = GNN(dim_features=dataset[0].x.shape[1], dim_target = 1, layers = [16,16,8],
@@ -274,13 +274,13 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT
 
 #training loop
 epoch_loss = {}
-epoch_acc = {}
 epoch_loss['train'] = []
-epoch_acc['train'] = []
-model.train()
+epoch_loss['test'] = []
 for epoch in tqdm(range(0,EPOCHS)):
     e_loss = 0
     e_acc = 0
+    z = toTensor(0)
+    model.train()
     for i in range(0, len(train_pairs_list),BATCH_SIZE):
         optimizer.zero_grad()
         batch_pairs = train_pairs_list[i:i+BATCH_SIZE]
@@ -296,7 +296,6 @@ for epoch in tqdm(range(0,EPOCHS)):
           data = data.to(device)
         output,_,_ = model(data)
         loss = 0
-        z = toTensor(0)
         num_pairs = len(batch_pairs)
         for (xi,xj) in batch_pairs:
             #the index of xi,xj in graph_set will give the index of relevant output
@@ -320,46 +319,49 @@ for epoch in tqdm(range(0,EPOCHS)):
     if VALIDATION:
         val_e_loss = validation_loss(test_dataset,test_pairs_list)
         epoch_loss['test'].append(val_e_loss)
+    #I am plotting the normalised loss per epoch so the training and testing can be compared
+    e_loss = e_loss/len(train_pairs_list)
     epoch_loss['train'].append(e_loss)
-    epoch_acc['train'].append(e_acc)
 
-plot_curves(EPOCHS,epoch_loss['train'],'Loss',epoch_acc['train'],'Accuracy')
+plot_curves(EPOCHS,epoch_loss,'Loss')
 
 #Test evaluation on training data
 #Need to alter this so it passes data in batches again and then appends outputs to list
 model.eval()
-outputs = []
-for i in range(0, len(train_dataset),BATCH_SIZE):
-  graphs = train_dataset[i:i+BATCH_SIZE]
-  loader = DataLoader(graphs,batch_size=BATCH_SIZE)
-  for data in loader: #This for has only one iter.
-    data = data.to(device)
-  z,_,_ = model(data)
-  z = z.cpu().detach().numpy()
-  for j in range(len(z)):
-    outputs.append(z[j])
-T = [train_pairs[i][1] for i in range(len(train_pairs))]
-E = [train_pairs[i][0] for i in range(len(train_pairs))]
-#pdb.set_trace()
-concord = cindex(T,outputs,E)
-print(concord)
+with torch.no_grad():
+    outputs = []
+    for i in range(0, len(train_dataset),BATCH_SIZE):
+        graphs = train_dataset[i:i+BATCH_SIZE]
+        loader = DataLoader(graphs,batch_size=BATCH_SIZE)
+        for data in loader: #This for has only one iter.
+            data = data.to(device)
+        z,_,_ = model(data)
+        z = z.cpu().detach().numpy()
+        for j in range(len(z)):
+            outputs.append(z[j])
+    T = [train_pairs[i][1] for i in range(len(train_pairs))]
+    E = [train_pairs[i][0] for i in range(len(train_pairs))]
+    #pdb.set_trace()
+    concord = cindex(T,outputs,E)
+    print(concord)
 
 # Proper evaluation
 model.eval()
-test_outputs = []
-for i in range(0, len(test_dataset),BATCH_SIZE):
-  graphs = test_dataset[i:i+BATCH_SIZE]
-  load = DataLoader(graphs,batch_size=BATCH_SIZE)
-  for data in load:
-    data = data.to(device)
-  z,_,_ = model(data)
-  z = z.cpu().detach().numpy()
-  for j in range(len(z)):
-    test_outputs.append(z[j])
-T = [test_pairs[i][1] for i in range(len(test_dataset))]
-E = [test_pairs[i][0] for i in range(len(test_dataset))]
-concord = cindex(T,test_outputs,E)
-print(concord)
+with torch.no_grad():
+    test_outputs = []
+    for i in range(0, len(test_dataset),BATCH_SIZE):
+        graphs = test_dataset[i:i+BATCH_SIZE]
+        load = DataLoader(graphs,batch_size=BATCH_SIZE)
+        for data in load:
+            data = data.to(device)
+        z,_,_ = model(data)
+        z = z.cpu().detach().numpy()
+        for j in range(len(z)):
+            test_outputs.append(z[j])
+    T = [test_pairs[i][1] for i in range(len(test_dataset))]
+    E = [test_pairs[i][0] for i in range(len(test_dataset))]
+    concord = cindex(T,test_outputs,E)
+    print(concord)
 
 
 
