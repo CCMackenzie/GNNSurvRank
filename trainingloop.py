@@ -180,7 +180,7 @@ EPOCHS = 10 # Total number of epochs
 L1_WEIGHT = 0.001
 BATCH_SIZE = 4
 SHUFFLE_NET = True
-MAX_FILESIZE = 40000000
+MAX_FILESIZE = 40_000_000
 P = 1
 VALIDATION = True
 NORMALIZE = True
@@ -276,10 +276,10 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT
 epoch_loss = {}
 epoch_loss['train'] = []
 epoch_loss['test'] = []
+z = toTensor(0)
 for epoch in tqdm(range(0,EPOCHS)):
     e_loss = 0
     e_acc = 0
-    z = toTensor(0)
     model.train()
     for i in range(0, len(train_pairs_list),BATCH_SIZE):
         optimizer.zero_grad()
