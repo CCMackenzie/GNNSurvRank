@@ -45,6 +45,9 @@ def cuda(v):
         return v.cuda()
     return v
 def toTensor(v,dtype = torch.float,requires_grad = True):
+    return torch.from_numpy(np.array(v)).type(dtype).requires_grad_(requires_grad)
+
+def toTensorGPU(v,dtype = torch.float,requires_grad = True):
     return cuda(torch.from_numpy(np.array(v)).type(dtype).requires_grad_(requires_grad))
 def toNumpy(v):
     if type(v) is not torch.Tensor: return np.asarray(v)
@@ -150,6 +153,7 @@ def plot_curves(Nepochs, e_metric, metric1):
 
 def validation_loss(val_data, pairs_list):
     epoch_val_loss = 0
+    z = toTensorGPU(0)
     model.eval()
     with torch.no_grad():
         for j in range(0, len(pairs_list), BATCH_SIZE):
@@ -162,7 +166,6 @@ def validation_loss(val_data, pairs_list):
                 data = data.to(device)
             output,_,_ = model(data)
             v_loss = 0
-            z = toTensor(0)
             num_pairs = len(b_pairs)
             for (xi,xj) in b_pairs:
                 graph_i, graph_j = g_set.index(xi), g_set.index(xj)
@@ -222,7 +225,7 @@ for graph in tqdm(graphlist):
     status = TS.loc[TAG,:][1]
     pfi, pfi_time = TS.loc[TAG,:][0], TS.loc[TAG,:][1]
     pfi_and_times.append((pfi,pfi_time)) #This needs to be altered so it is part of the graph data structure
-    G.y = toTensor([int(status)], dtype=torch.long, requires_grad = False)
+    G.y = toTensorGPU([int(status)], dtype=torch.long, requires_grad = False)
     dataset.append(G)
 
 if NORMALIZE: #It looks like this uses huge memory when using shuffle net features will need to re-think this
@@ -276,7 +279,7 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT
 epoch_loss = {}
 epoch_loss['train'] = []
 epoch_loss['test'] = []
-z = toTensor(0)
+z = toTensorGPU(0)
 for epoch in tqdm(range(0,EPOCHS)):
     e_loss = 0
     e_acc = 0
