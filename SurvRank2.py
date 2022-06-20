@@ -243,15 +243,16 @@ class Evaluator:
         model.eval()
         outputs = []
         keys = [key for key in dataset]
-        for i in range(0,keys,self.batchsize):
-            graphs = graph_load(keys[i:i+self.batchsize])
-            load = DataLoader(graphs, batch_size=self.batchsize)
-            for data in load:
-                data = data.to(self.device)
-            z,_,_ = model(data)
-            z = z.cpu().detach().numpy()
-            for j in range(len(z)):
-                outputs.append(z[j][0])
+        with torch.no_grad():
+            for i in range(0,keys,self.batchsize):
+                graphs = graph_load(keys[i:i+self.batchsize])
+                load = DataLoader(graphs, batch_size=self.batchsize)
+                for data in load:
+                    data = data.to(self.device)
+                z,_,_ = model(data)
+                z = z.cpu().detach().numpy()
+                for j in range(len(z)):
+                    outputs.append(z[j][0])
         T = [dataset[key][1] for key in keys]
         E = [dataset[key][0] for key in keys]
         return cindex(T,outputs,E)
@@ -261,15 +262,16 @@ class Evaluator:
         model.eval()
         outputs = []
         keys = [key for key in dataset]
-        for i in range(0,keys,self.batchsize):
-            graphs = graph_load(keys[i:i+self.batchsize])
-            load = DataLoader(graphs, batch_size=self.batchsize)
-            for data in load:
-                data = data.to(self.device)
-            z,_,_ = model(data)
-            z = z.cpu().detach().numpy()
-            for j in range(len(z)):
-                outputs.append(z[j][0])
+        with torch.no_grad():
+            for i in range(0,keys,self.batchsize):
+                graphs = graph_load(keys[i:i+self.batchsize])
+                load = DataLoader(graphs, batch_size=self.batchsize)
+                for data in load:
+                    data = data.to(self.device)
+                z,_,_ = model(data)
+                z = z.cpu().detach().numpy()
+                for j in range(len(z)):
+                    outputs.append(z[j][0])
         T = [dataset[key][1] for key in keys]
         E = [dataset[key][0] for key in keys]
         mid = np.median(outputs)
