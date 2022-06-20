@@ -141,7 +141,7 @@ class GNN(torch.nn.Module):
         return out,Z,x
 
 
-class NetWrapper():
+class NetWrapper:
     def __init__(self,model,loss_function, device='cuda:0',mode='Survival',batch_size = 10) -> None:
         self.model = model
         self.loss_fun = loss_function
