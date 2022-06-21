@@ -175,11 +175,48 @@ class NetWrapper:
                 epoch_val_loss += v_loss.item()
         return epoch_val_loss
 
+    def concord(self,dataset):
+        # Not overly clean keeping this here but will think of a better way soon
+        model = self.model.to(self.device)
+        model.eval()
+        outputs = []
+        keys = [key for key in dataset]
+        with torch.no_grad():
+            for i in range(0,keys,self.batchsize):
+                graphs = graph_load(keys[i:i+self.batchsize])
+                load = DataLoader(graphs, batch_size=self.batchsize)
+                for data in load:
+                    data = data.to(self.device)
+                z,_,_ = model(data)
+                z = z.cpu().detach().numpy()
+                for j in range(len(z)):
+                    outputs.append(z[j][0])
+        T = [dataset[key][1] for key in keys]
+        E = [dataset[key][0] for key in keys]
+        return cindex(T,outputs,E)
+
+    def convergence_curves(self,batches,e_metric):
+        Nepochs = np.arange(batches)
+        fig, ax1 = plt.subplots()
+        color = 'tab:red'
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Train Loss', color=color)
+        ax1.plot(Nepochs, e_metric['train'], color=color)
+        ax1.tick_params(axis='y', labelcolor=color)
+        ax2 = ax1.twinx() 
+        color = 'tab:blue'
+        ax2.set_ylabel('Test Loss', color=color)
+        ax2.plot(Nepochs, e_metric['test'], color=color)
+        ax2.tick_params(axis='y', labelcolor=color)
+        fig.tight_layout()  # otherwise the right y-label is slightly clipped
+        plt.show()
+
     def train(self,max_batches=10_000,optimizer=torch.optim.Adam,early_stopping=100,return_best=False,
-            num_logs=50, training_data = None, validation_data = None, batch_size = 10):
+            num_logs=50, training_data = None, validation_data = None, batch_size = 10,convergence=True):
         model = self.model.to(self.device)
         counter = 0
-        b_loss = 0
+        best_c_val = 0
+        not_improved = 0
         if validation_data:
             VALIDATION = True
         print("Number of batches used for training "+ str(max_batches))
@@ -231,6 +268,21 @@ class NetWrapper:
                 if output:
                     print("Current Loss Val: " + str(lv) + "\n")
                     print("Current Vali Loss Val: " + str(val_loss) + "\n")
+            if i%10 == 0:
+                c_val = self.concord()
+                if c_val > best_c_val:
+                    best_c_val = c_val
+                    # Would implement a save best model here as well
+                else:
+                    not_improved += 1
+            if not_improved == 2:
+                train_len = i
+                break
+        if not train_len:
+            train_len = max_batches
+        if convergence:
+            # Show convergence curves
+            self.convergence_curves(train_len,loss_vals)
 
 class Evaluator:
     def __init__(self,model,device = 'cuda:0',batchsize = 10):
