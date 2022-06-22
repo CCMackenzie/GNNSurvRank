@@ -149,7 +149,7 @@ class NetWrapper:
         self.mode = mode
         self.batch_size = batch_size
 
-    def validation_loss_disk(self,pairs_list):
+    def validation_loss_disk(self,pairs_list) -> float:
         epoch_val_loss = 0
         z = toTensorGPU(0)
         model = self.model.to(self.device)
@@ -175,7 +175,7 @@ class NetWrapper:
                 epoch_val_loss += v_loss.item()
         return epoch_val_loss
 
-    def concord(self,dataset):
+    def concord(self,dataset) -> float:
         # Not overly clean keeping this here but will think of a better way soon
         model = self.model.to(self.device)
         model.eval()
@@ -196,6 +196,9 @@ class NetWrapper:
         return cindex(T,outputs,E)
 
     def convergence_curves(self,batches,e_metric):
+        '''
+        NEED TO FIX HERE
+        '''
         Nepochs = np.arange(batches)
         fig, ax1 = plt.subplots()
         color = 'tab:red'
@@ -332,7 +335,7 @@ class Evaluator:
         E_hi = []
         E_lo = []
         for i in range(len(outputs)):
-            if outputs >= mid:
+            if outputs <= mid: # Swapped from >= to <=
                 T_hi.append(T[i])
                 E_hi.append(E[i])
             else:
@@ -353,6 +356,6 @@ class Evaluator:
 
         
 
-
+# Get the median value of the training set and use this to split the test set.
 
 
