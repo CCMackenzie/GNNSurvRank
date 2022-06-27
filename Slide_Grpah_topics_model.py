@@ -303,7 +303,7 @@ def decision_function(model,loader,device='cpu',outOnly=True,returnNumpy=False):
     returnNumpy : TYPE, optional
         DESCRIPTION. The default is False. Return numpy array or ttensor
     Returns
-    -------
+    -------s
     Z : TYPE
         DESCRIPTION.
     Y : TYPE
