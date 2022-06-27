@@ -218,57 +218,66 @@ def new_pair_find(data):
   shuffle(pairs_dataset)
   return pairs_dataset
 
-def validation_loss(val_data, pairs_list):
-    epoch_val_loss = 0
+def loss_fn(model,batch,testing = False):
     z = toTensorGPU(0)
-    model.eval()
-    count = 0
-    with torch.no_grad():
-      for j in range(0, len(pairs_list), BATCH_SIZE):
-          b_pairs = pairs_list[j:j+BATCH_SIZE]
-          temp = [idx for pair in b_pairs for idx in pair]
-          g_set = list(set(temp))
-          graphs = [val_data[i] for i in g_set]
-          batch_load = DataLoader(graphs,batch_size = len(graphs))
-          for data in batch_load:
-              data = data.to(device)
-          output,_,_ = model(data)
-          v_loss = 0
-          num_pairs = len(b_pairs)
-          for (xi,xj) in b_pairs:
-              graph_i, graph_j = g_set.index(xi), g_set.index(xj)
-              dz = output[graph_i] - output[graph_j]
-              v_loss += torch.max(z, 1.0 - dz)
-          v_loss = v_loss/num_pairs
-          epoch_val_loss += loss.item()
-          count += 1
-    return epoch_val_loss
+    loss = 0
+    unzipped = [j for pair in batch for j in pair]
+    graph_set = list(set(unzipped))
+    batch_load = DataLoader(graph_set, batch_size = len(graph_set))
+    for data in batch_load:
+        data = data.to(device)
+    if testing:
+        model.eval()
+    with torch.set_grad_enabled(testing):
+        output,_,_ = model(data)
+    num_pairs = len(batch)
+    for (xi,xj) in batch:
+        graph_i, graph_j = graph_set.index(xi), graph_set.index(xj)
+        # Compute loss function
+        dz = output[graph_i] - output[graph_j]
+        loss += torch.max(z, 1.0 - dz)
+    if testing:
+        return loss.item(), num_pairs
+    loss = loss/num_pairs
+    return loss
 
 def validation_loss_disk(val_data, pairs_list):
-    epoch_val_loss = 0
-    z = toTensorGPU(0)
-    model.eval()
-    count = 0
-    with torch.no_grad():
-      for j in range(0, len(pairs_list), BATCH_SIZE):
-          b_pairs = pairs_list[j:j+BATCH_SIZE]
-          temp = [idx for pair in b_pairs for idx in pair]
-          g_set = list(set(temp))
-          graphs = graph_load(g_set)
-          batch_load = DataLoader(graphs,batch_size = len(graphs))
-          for data in batch_load:
-              data = data.to(device)
-          output,_,_ = model(data)
-          v_loss = 0
-          num_pairs = len(b_pairs)
-          for (xi,xj) in b_pairs:
-              graph_i, graph_j = g_set.index(xi), g_set.index(xj)
-              dz = output[graph_i] - output[graph_j]
-              v_loss += torch.max(z, 1.0 - dz)
-          v_loss = v_loss/num_pairs
-          epoch_val_loss += v_loss.item()
-          count += 1
+    tot_pairs = 0
+    tot_loss = 0
+    for j in range(0, len(pairs_list), BATCH_SIZE):
+        b_pairs = pairs_list[j:j+BATCH_SIZE]
+        loss, pairs = loss_fn(model,b_pairs,testing = True)
+        tot_pairs += pairs
+        tot_loss += loss
+    epoch_val_loss = tot_loss / tot_pairs
     return epoch_val_loss
+
+def get_predictions(model, keys):
+    outputs = []
+    model.eval()
+    with torch.no_grad():
+        for i in range(0,len(keys), BATCH_SIZE):
+            graphs = graph_load(keys[i:i+BATCH_SIZE])
+            loader = DataLoader(graphs, batch_size=BATCH_SIZE)
+            for data in loader:
+                data = data.to(device)
+            z,_,_ = model(data)
+            z = z.cpu().detach().numpy()
+            for j in range(len(z)):
+                outputs.append(z[j][0])
+    return outputs
+
+def C_index_eval(dataset, model):
+    keys = [key for key in dataset]
+    outputs = get_predictions(model,keys)
+    T = [dataset[key][1] for key in keys]
+    E = [dataset[key][0] for key in keys]
+    concord = cindex(T,outputs,E)
+    return concord
+
+def concord_plot(c_vals):
+    plt.plot(c_vals,linestyle='dotted')
+    plt.show()
 
 # Set up const vals
 LEARNING_RATE = 0.01  
@@ -277,7 +286,7 @@ EPOCHS = 5 # Total number of epochs
 L1_WEIGHT = 0.001
 SCHEDULER = None
 BATCH_SIZE = 10 #Reduce further and allow larger files
-NUM_BATCHES = 25_000
+NUM_BATCHES = 10_000
 NUM_LOGS = 50 # How many times in the training loss is stored
 P = 1
 SHUFFLE_NET = True #Select what feature set to use
@@ -285,6 +294,8 @@ MAX_FILESIZE = 100_000_000_000_000 #Set as large number will remove file restric
 VALIDATION = True
 NORMALIZE = False
 CENSORING = True
+FRAC_TRAIN = 0.8
+CONCORD_TRACK = True
 
 #from re import X
 import pandas as pd
@@ -377,6 +388,7 @@ def dict_split(data: dict, directory: str, train: float, test: float):
     if len(train_data) + len(test_data) != num_graphs:
       raise ValueError("Invalid Dictionary split")
     print('Number of training graphs: ' + str(len(train_data)))
+    print('Number of test graphs: ' + str(len(test_data)))
     print('Number of test/validation graphs: ' + str(len(test_data)))
     return train_data, test_data
 
@@ -392,18 +404,21 @@ print(len(event_and_times))
 # Will look at validation later
 
 if num_graphs != len(event_and_times):
-  raise ValueError("Inconsistent data values")
+    raise ValueError("Inconsistent data values")
 
 #Ensure the pfi_dataset and the graphs are aligned
 num_train = math.floor(0.75 * len(event_and_times))
 num_test = len(event_and_times) - num_train
+
+if CENSORING:
+    event_and_times = censor_data(event_and_times)
 
 train_dataset, test_dataset = dict_split(event_and_times, 'Graphs', 0.75, 0.25)
 # Run pair finding over the given dictionaries
 train_pairs_list = new_pair_find(train_dataset)
 test_pairs_list = new_pair_find(test_dataset)
 
-print('Total number of examples: ' + str(len(dataset)))
+print('Total number of examples: ' + str(len(event_and_times)))
 print('Number of training examples: ' + str(len(train_dataset)))
 print('Number of test examples: ' +str(len(test_dataset)))
 print('Number of valid pairs for training: ' + str(len(train_pairs_list)))
@@ -427,7 +442,7 @@ log_iterval = NUM_BATCHES // NUM_LOGS
 loss_vals = {}
 loss_vals['train'] = []
 loss_vals['test'] = []
-z = toTensorGPU(0)
+concords = []
 # Running list of previous losses to get more accurate training loss at intervals
 prev_losses = [0] * 50 # Queue of previous 50 batches loss values for averaging
 # Not sure about the positioning of this but this seems ok
@@ -438,81 +453,48 @@ for i in tqdm(range(NUM_BATCHES)):
         optimizer.zero_grad()
         # Get a batch of pairs
         batch_pairs = train_pairs_list[counter:counter+BATCH_SIZE]
-        unzipped_pairs = [j for pair in batch_pairs for j in pair]
-        graph_set = list(set(unzipped_pairs))
-        graphs = graph_load(graph_set)
-        batch_load = DataLoader(graphs, batch_size = len(graphs))
-        for data in batch_load:
-            data = data.to(device)
-        output,_,_ = model(data)
-        loss = 0
-        num_pairs = len(batch_pairs)
-        for (xi,xj) in batch_pairs:
-            graph_i, graph_j = graph_set.index(xi), graph_set.index(xj)
-            # Compute loss function
-            dz = output[graph_i] - output[graph_j]
-            loss += torch.max(z, 1.0 - dz)
-        loss = loss/num_pairs
+        loss = loss_fn(model,batch_pairs)
         prev_losses.append(loss.item())
         loss.backward()
         optimizer.step()
         counter += BATCH_SIZE
     # This is to resolve list index errors with large NUM_BATCHES vals
-    if counter >= len(train_pairs_list):
+    else:
         counter = 0
         # Could shuffle here if there are examples that are never considered
     if i % log_iterval == 0:
         if VALIDATION:
             val_loss = validation_loss_disk(test_dataset, test_pairs_list)
             loss_vals['test'].append(val_loss)
+            if CONCORD_TRACK:
+                c_val = C_index_eval(test_dataset,model)
+                concords.append(c_val)
         if len(prev_losses) != 50:
             raise(ValueError)
         lv = mean(prev_losses)
         loss_vals['train'].append(lv) # This might not work
         print("Current Loss Val: " + str(lv) + "\n")
         print("Current Vali Loss Val: " + str(val_loss) + "\n")
+if CONCORD_TRACK:
+    concord_plot()
 
-def C_index_eval(dict: dataset, model):
-    model.eval()
-    test_outputs = []
-    keys = [key for key in test_dataset]
-    for i in range(0, len(keys),BATCH_SIZE):
-      graphs = graph_load(keys[i:i+BATCH_SIZE])
-      load = DataLoader(graphs,batch_size=BATCH_SIZE)
-      for data in load:
-        data = data.to(device)
-      z,_,_ = model(data)
-      z = z.cpu().detach().numpy()
-      for j in range(len(z)):
-        test_outputs.append(z[j][0])
-    T = [test_dataset[key][1] for key in keys]
-    E = [test_dataset[key][0] for key in keys]
-    pdb.set_trace()
-    concord = cindex(T,test_outputs,E)
-    print(concord)
-
-def K_M_Curves(dataset, model):
-    model.eval()
-    outputs = [] # Use as the time value
+def K_M_Curves(dataset, model, split_val, mode = 'Train'):
     keys = [key for key in dataset]
-    for i in range(0, len(keys),BATCH_SIZE):
-      graphs = graph_load(keys[i:i+BATCH_SIZE])
-      load = DataLoader(graphs,batch_size=BATCH_SIZE)
-      for data in load:
-        data = data.to(device)
-      z,_,_ = model(data)
-      z = z.cpu().detach().numpy()
-      for j in range(len(z)):
-        outputs.append(z[j])
+    outputs = get_predictions(model,keys)
     T = [dataset[key][1] for key in keys]
     E = [dataset[key][0] for key in keys]
     mid = np.median(outputs)
+    if mode != 'Train':
+        if split_val > 0:
+            mid = split_val
+    else:
+        print(mid)
     T_high = []
     T_low = []
     E_high = [] 
     E_low = []
     for i in range(len(outputs)):
-      if outputs[i] >= mid:
+      if outputs[i] <= mid:
         T_high.append(T[i])
         E_high.append(E[i])
       else:
