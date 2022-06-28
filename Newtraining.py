@@ -223,12 +223,15 @@ def loss_fn(model,batch,testing = False):
     loss = 0
     unzipped = [j for pair in batch for j in pair]
     graph_set = list(set(unzipped))
-    batch_load = DataLoader(graph_set, batch_size = len(graph_set))
+    graphs = graph_load(graph_set)
+    batch_load = DataLoader(graphs, batch_size = len(graphs))
     for data in batch_load:
         data = data.to(device)
     if testing:
         model.eval()
-    with torch.set_grad_enabled(testing):
+    else:
+        model.train()
+    with torch.set_grad_enabled(not testing):
         output,_,_ = model(data)
     num_pairs = len(batch)
     for (xi,xj) in batch:
@@ -241,7 +244,7 @@ def loss_fn(model,batch,testing = False):
     loss = loss/num_pairs
     return loss
 
-def validation_loss_disk(val_data, pairs_list):
+def validation_loss_disk(pairs_list):
     tot_pairs = 0
     tot_loss = 0
     for j in range(0, len(pairs_list), BATCH_SIZE):
@@ -444,17 +447,13 @@ loss_vals['train'] = []
 loss_vals['test'] = []
 concords = []
 # Running list of previous losses to get more accurate training loss at intervals
-prev_losses = [0] * 50 # Queue of previous 50 batches loss values for averaging
-# Not sure about the positioning of this but this seems ok
-model.train()
 for i in tqdm(range(NUM_BATCHES)):
-    prev_losses.pop(0)
-    if counter < len(train_pairs_list):
+    if counter < len(train_pairs_list): # Should probably have this the other way around
         optimizer.zero_grad()
         # Get a batch of pairs
         batch_pairs = train_pairs_list[counter:counter+BATCH_SIZE]
         loss = loss_fn(model,batch_pairs)
-        prev_losses.append(loss.item())
+        b_loss = loss.item()
         loss.backward()
         optimizer.step()
         counter += BATCH_SIZE
@@ -469,11 +468,8 @@ for i in tqdm(range(NUM_BATCHES)):
             if CONCORD_TRACK:
                 c_val = C_index_eval(test_dataset,model)
                 concords.append(c_val)
-        if len(prev_losses) != 50:
-            raise(ValueError)
-        lv = mean(prev_losses)
-        loss_vals['train'].append(lv) # This might not work
-        print("Current Loss Val: " + str(lv) + "\n")
+        loss_vals['train'].append(b_loss) # This might not work
+        print("\n" + "Current Loss Val: " + str(b_loss) + "\n")
         print("Current Vali Loss Val: " + str(val_loss) + "\n")
 if CONCORD_TRACK:
     concord_plot()

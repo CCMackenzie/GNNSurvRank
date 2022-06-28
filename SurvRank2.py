@@ -1,4 +1,5 @@
 #imports
+from xmlrpc.client import Boolean
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn as nn
@@ -170,11 +171,14 @@ class NetWrapper:
         loss = 0
         unzipped = [j for pair in batch for j in pair]
         graph_set = list(set(unzipped))
-        batch_load = DataLoader(graph_set, batch_size = len(graph_set))
+        graphs = graph_load(graph_set)
+        batch_load = DataLoader(graphs, batch_size = len(graphs))
         for data in batch_load:
             data = data.to(device)
         if testing:
             model.eval()
+        else:
+            model.train()
         with torch.set_grad_enabled(testing):
             output,_,_ = model(data)
         num_pairs = len(batch)
@@ -240,18 +244,13 @@ class NetWrapper:
         loss_vals['train'] = []
         loss_vals['test'] = []
         z = toTensorGPU(0)
-        # Running list of previous losses to get more accurate training loss at intervals
-        prev_losses = [1000] * 50 # Queue of previous 50 batches loss values for averaging
-        # Not sure about the positioning of this but this seems ok
-        model.train()
         for i in tqdm(range(max_batches)):
-            prev_losses.pop(0)
             if counter < len(training_data):
                 optimizer.zero_grad()
                 # Get a batch of pairs
                 batch_pairs = training_data[counter:counter+batch_size]
                 loss = self.loss_fn(batch_pairs)
-                prev_losses.append(loss.item())
+                lv = loss.item()
                 loss.backward()
                 optimizer.step()
                 counter += batch_size
@@ -263,14 +262,11 @@ class NetWrapper:
                 if VALIDATION:
                     val_loss = self.validation_loss_disk(validation_data)
                     loss_vals['test'].append(val_loss)
-                if len(prev_losses) != 50:
-                    raise(ValueError)
-                lv = mean(prev_losses)
                 loss_vals['train'].append(lv) # This might not work
                 if output:
                     print("Current Loss Val: " + str(lv) + "\n")
                     print("Current Vali Loss Val: " + str(val_loss) + "\n")
-            if i%10 == 0:
+            if i%10 == 0: # This needs fixing
                 c_val = self.concord()
                 if c_val > best_c_val:
                     best_c_val = c_val
@@ -333,3 +329,29 @@ class Evaluator:
         plt.tight_layout()
         results = logrank_test(T_lo, T_hi, E_lo, E_hi)
         print("p-value %s; log-rank %s" % (results.p_value, np.round(results.test_statistic, 6)))
+
+def output_and_loss(model,batch,testing = False, c_index = False): # Not completed will continue to look at this
+    z = toTensorGPU(0)
+    loss = 0
+    unzipped = [j for pair in batch for j in pair]
+    graph_set = list(set(unzipped))
+    graphs = graph_load(graph_set)
+    batch_load = DataLoader(graphs, batch_size = len(graphs))
+    for data in batch_load:
+        data = data.to(device)
+    if testing:
+        model.eval()
+    else:
+        model.train()
+    with torch.set_grad_enabled(testing):
+        output,_,_ = model(data)
+    num_pairs = len(batch)
+    for (xi,xj) in batch:
+        graph_i, graph_j = graph_set.index(xi), graph_set.index(xj)
+        # Compute loss function
+        dz = output[graph_i] - output[graph_j]
+        loss += torch.max(z, 1.0 - dz)
+    if testing and not c_index:
+        return loss.item(), num_pairs
+    loss = loss/num_pairs
+    return loss
