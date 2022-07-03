@@ -299,13 +299,15 @@ NORMALIZE = False
 CENSORING = True
 FRAC_TRAIN = 0.8
 CONCORD_TRACK = True
+VARIABLES = 'OS'
+TIME_VAR = VARIABLES + '.time'
 
 #from re import X
 import pandas as pd
 # This is set up to run on colab vvv
 #Confirm that features file corresponds to xlsx file 
 survival_file = 'drive/MyDrive/SlideGraph/NIHMS978596-supplement-1.xlsx'
-cols2read = ['OS','OS.time'] #['PFI', 'PFI.time'] 
+cols2read = [VARIABLES,TIME_VAR]
 TS = pd.read_excel(survival_file).rename(columns= {'bcr_patient_barcode':'ID'}).set_index('ID')  # path to clinical file
 TS = TS[cols2read][TS.type == 'BRCA']
 print(TS.shape)
