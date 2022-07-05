@@ -393,6 +393,7 @@ NORMALIZE = False
 CENSORING = True
 FRAC_TRAIN = 0.8
 CONCORD_TRACK = True
+FILTER_TRIPLE = True
 VARIABLES = 'OS'
 TIME_VAR = VARIABLES + '.time'
 USE_CUDA = torch.cuda.is_available()
@@ -421,10 +422,18 @@ if __name__ == '__main__':
     dataset = []
     # Set up directory for on disk dataset
     directory = 'Graphs'
+
+    if FILTER_TRIPLE:
+        filter_file = 'drive/MyDrive/SlideGraph/TCGA-BRCA-DX_CLINI (8).xlsx'
+        cols = ['ERStatus','PRStatus','HER2FinalStatus']
+        db = pd.read_excel(filter_file).rename(columns= {'CompleteTCGAID':'ID'}).set_index('ID')
+        db = db[cols]
+
     try:
         os.mkdir(directory)
     except FileExistsError:
         pass
+
     event_and_times = {}
     for graph in tqdm(graphlist):
         TAG = os.path.split(graph)[-1].split('_')[0][:12]
@@ -434,6 +443,10 @@ if __name__ == '__main__':
             #continue
         status = TS.loc[TAG,:][1]
         event, event_time = TS.loc[TAG,:][0], TS.loc[TAG,:][1]
+        if FILTER_TRIPLE:
+            er, pr, her2 = db.loc[TAG,:][0], db.loc[TAG,:][1], db.loc[TAG,:][2]
+            if er == pr == her2 == 'Negative':
+                continue
         if SHUFFLE_NET:
             G = torch.load(graph, map_location='cpu') # Seem to get an error here randomly "Transport endpoint is not connected"
             G = Data(**G.__dict__)
