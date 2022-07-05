@@ -29,9 +29,20 @@ from sklearn.neighbors import kneighbors_graph, radius_neighbors_graph
 from sklearn.model_selection import StratifiedKFold
 import pdb
 from statistics import mean
+from glob import glob
+import os
+import pandas as pd
+import numpy as np
+import pickle
+from torch.autograd import Variable
+from torch_geometric.data import Data
+from torch_geometric.loader import DataLoader
+from sklearn.neighbors import kneighbors_graph, radius_neighbors_graph
+from sklearn.model_selection import StratifiedKFold, train_test_split
+import math
+from random import shuffle
+from itertools import islice
 
-USE_CUDA = torch.cuda.is_available()
-device = {True:'cuda:0',False:'cpu'}[USE_CUDA] 
 def cuda(v):
     if USE_CUDA:
         return v.cuda()
@@ -182,20 +193,6 @@ def new_plot(Nepochs, e_metric):
     fig.tight_layout()  # otherwise the right y-label is slightly clipped
     plt.show()
 
-from glob import glob
-import os
-import pandas as pd
-import numpy as np
-import pickle
-from torch.autograd import Variable
-from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
-from sklearn.neighbors import kneighbors_graph, radius_neighbors_graph
-from sklearn.model_selection import StratifiedKFold, train_test_split
-import math
-from random import shuffle
-from itertools import islice
-
 def get_pairs(tuples): # Need to change this func to work with saved data
   pairs_dataset = []
   for j in range(len(tuples)):
@@ -265,7 +262,7 @@ def get_predictions(model, keys):
             for data in loader:
                 data = data.to(device)
             z,_,_ = model(data)
-            z = z.cpu().detach().numpy()
+            z = toNumpy(z)
             for j in range(len(z)):
                 outputs.append(z[j][0])
     return outputs
@@ -281,95 +278,6 @@ def C_index_eval(dataset, model):
 def concord_plot(c_vals):
     plt.plot(c_vals,linestyle='dotted')
     plt.show()
-
-# Set up const vals
-LEARNING_RATE = 0.01  
-WEIGHT_DECAY = 0.01
-EPOCHS = 5 # Total number of epochs
-L1_WEIGHT = 0.001
-SCHEDULER = None
-BATCH_SIZE = 10 #Reduce further and allow larger files
-NUM_BATCHES = 10_000
-NUM_LOGS = 50 # How many times in the training loss is stored
-P = 1
-SHUFFLE_NET = True #Select what feature set to use
-MAX_FILESIZE = 100_000_000_000_000 #Set as large number will remove file restrictions later
-VALIDATION = True
-NORMALIZE = False
-CENSORING = True
-FRAC_TRAIN = 0.8
-CONCORD_TRACK = True
-VARIABLES = 'OS'
-TIME_VAR = VARIABLES + '.time'
-
-#from re import X
-import pandas as pd
-# This is set up to run on colab vvv
-#Confirm that features file corresponds to xlsx file 
-survival_file = 'drive/MyDrive/SlideGraph/NIHMS978596-supplement-1.xlsx'
-cols2read = [VARIABLES,TIME_VAR]
-TS = pd.read_excel(survival_file).rename(columns= {'bcr_patient_barcode':'ID'}).set_index('ID')  # path to clinical file
-TS = TS[cols2read][TS.type == 'BRCA']
-print(TS.shape)
-#wsi_selected = 'drive/MyDrive/SlideGraph/slide_selection_final.txt'
-#filter = np.array(pd.read_csv(wsi_selected)).ravel()
-#Pids = np.array([p[:12] for p in filter])
-bdir = 'drive/MyDrive/SlideGraph/Graph_feats_CC_CPU/' # path to graphs
-if SHUFFLE_NET:
-  bdir = 'drive/MyDrive/SlideGraph/graphs_featuresresnet_cluster_08_1111ERslides/'
-Exid = 'Slide_Graph CC_feats'
-graphlist = glob(os.path.join(bdir, "*.pkl"))#[0:100]
-print(len(graphlist))
-device = 'cuda:0'
-cpu = torch.device('cpu')
-dataset = []
-# Set up directory for on disk dataset
-directory = 'Graphs'
-try: # This could be made better
-  os.mkdir(directory)
-except FileExistsError:
-  pass
-event_and_times = {}
-for graph in tqdm(graphlist):
-    if SHUFFLE_NET:
-      filesize = os.path.getsize(graph)
-      if filesize < MAX_FILESIZE: # Remove this now
-        G = torch.load(graph, map_location='cpu') # Seem to get an error here randomly "Transport endpoint is not connected"
-        G = Data(**G.__dict__)
-      else:
-        continue
-    else:
-      G = pickleLoad(graph)
-      G.to('cpu')
-    TAG = os.path.split(graph)[-1].split('_')[0][:12]
-    #if TAG not in TS.index:
-        #continue
-    #if TAG not in Pids:
-        #continue
-    status = TS.loc[TAG,:][1]
-    event, event_time = TS.loc[TAG,:][0], TS.loc[TAG,:][1]
-    try:
-      G.y = toTensorGPU([int(status)], dtype=torch.long, requires_grad = False)
-    except ValueError:
-      continue
-    W = radius_neighbors_graph(toNumpy(G.coords), 1500, mode="connectivity",include_self=False).toarray()
-    g = toGeometricWW(toNumpy(G.x),W,toNumpy(G.y))
-    g.coords = G.coords
-    g.event = toTensor(event)
-    g.e_time = toTensor(event_time)
-    event_and_times[TAG] = (event,event_time)
-    #dataset.append(G)
-    torch.save(g,'Graphs/'+TAG+'.g') #Need to save to appropriate location
-  
-if NORMALIZE: #Need to make this an online mean and stdev calc.
-  GN = []
-  for graph in dataset:
-    GN.append(G.x)
-  GN = torch.cat(GN)
-  Gmean, Gstd = torch.mean(GN,dim=0)+1e-10, torch.std(GN,dim=0)+1e-10
-  GN = None #Free up memory
-  for G in dataset:
-    G.x = (G.x - Gmean)/Gstd
 
 def censor_data(data: dict, censor_time: int): # The censor time here is measured in years
     # Convert the time to days for the purpose of the data
@@ -400,81 +308,37 @@ def dict_split(data: dict, directory: str, train: float, test: float):
 def graph_load(batch):
     return [torch.load(directory + '/' + graph + '.g') for graph in batch]
 
-
-num_graphs = len(os.listdir(directory))
-print(num_graphs)
-print(len(event_and_times))
-#Y = np.array([float(G.y) for G in dataset])
-# Split data and find paris for each 75% train 25% test
-# Will look at validation later
-
-if num_graphs != len(event_and_times):
-    raise ValueError("Inconsistent data values")
-
-#Ensure the pfi_dataset and the graphs are aligned
-num_train = math.floor(0.75 * len(event_and_times))
-num_test = len(event_and_times) - num_train
-
-if CENSORING:
-    event_and_times = censor_data(event_and_times)
-
-train_dataset, test_dataset = dict_split(event_and_times, 'Graphs', 0.75, 0.25)
-# Run pair finding over the given dictionaries
-train_pairs_list = new_pair_find(train_dataset)
-test_pairs_list = new_pair_find(test_dataset)
-
-print('Total number of examples: ' + str(len(event_and_times)))
-print('Number of training examples: ' + str(len(train_dataset)))
-print('Number of test examples: ' +str(len(test_dataset)))
-print('Number of valid pairs for training: ' + str(len(train_pairs_list)))
-print('Number of valid pairs for testing: ' + str(len(test_pairs_list)))
-
-#Load in a graph for the model parameters
-graph = torch.load(directory + '/TCGA-3C-AALI.g')
-
-#Set up model and optimizer
-model = GNN(dim_features=graph.x.shape[1], dim_target = 1, layers = [32,16,8],
-            dropout = 0.0, pooling = 'mean', conv='GINConv', aggr = 'max')
-# Have changed dataset[0].x.shpae[1] to graph.x.shape[1]
-model = model.to(device)
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-
-# Training Loop
-counter = 0
-b_loss = 0
-print("Number of batches used for training "+ str(NUM_BATCHES))
-log_iterval = NUM_BATCHES // NUM_LOGS
-loss_vals = {}
-loss_vals['train'] = []
-loss_vals['test'] = []
-concords = []
-# Running list of previous losses to get more accurate training loss at intervals
-for i in tqdm(range(NUM_BATCHES)):
-    if counter < len(train_pairs_list): # Should probably have this the other way around
-        optimizer.zero_grad()
-        # Get a batch of pairs
-        batch_pairs = train_pairs_list[counter:counter+BATCH_SIZE]
-        loss = loss_fn(model,batch_pairs)
-        b_loss = loss.item()
-        loss.backward()
-        optimizer.step()
-        counter += BATCH_SIZE
-    # This is to resolve list index errors with large NUM_BATCHES vals
-    else:
-        counter = 0
-        # Could shuffle here if there are examples that are never considered
-    if i % log_iterval == 0:
-        if VALIDATION:
-            val_loss = validation_loss_disk(test_dataset, test_pairs_list)
-            loss_vals['test'].append(val_loss)
-            if CONCORD_TRACK:
-                c_val = C_index_eval(test_dataset,model)
-                concords.append(c_val)
-        loss_vals['train'].append(b_loss) # This might not work
-        print("\n" + "Current Loss Val: " + str(b_loss) + "\n")
-        print("Current Vali Loss Val: " + str(val_loss) + "\n")
-if CONCORD_TRACK:
-    concord_plot()
+def training_loop(model,training_data, validation_data, num_batches = 5000, num_logs = 25):
+    counter = 0 # This is to resolve list index errors with large NUM_BATCHES vals
+    b_loss = 0
+    log_iterval = num_batches // num_logs
+    loss_vals = {}
+    loss_vals['train'] = []
+    loss_vals['test'] = []
+    concords = []
+    print("Number of batches used for training "+ str(num_batches))
+    for i in tqdm(range(num_batches)):
+        if counter < len(training_data):
+            optimizer.zero_grad()
+            batch_pairs = training_data[counter:counter+BATCH_SIZE]
+            loss = loss_fn(model,batch_pairs)
+            b_loss = loss.item()
+            loss.backward()
+            optimizer.step()
+            counter += BATCH_SIZE
+        else:
+            counter = 0
+        if i % log_iterval == 0:
+            if VALIDATION:
+                val_loss = validation_loss_disk(validation_data, test_pairs_list)
+                loss_vals['test'].append(val_loss)
+                if CONCORD_TRACK:
+                    c_val = C_index_eval(validation_data,model)
+                    concords.append(c_val)
+            loss_vals['train'].append(b_loss)
+            print("\n" + "Current Loss Val: " + str(b_loss) + "\n")
+            print("Current Vali Loss Val: " + str(val_loss) + "\n")
+    return loss_vals, concords
 
 def K_M_Curves(dataset, model, split_val, mode = 'Train'):
     keys = [key for key in dataset]
@@ -512,3 +376,130 @@ def K_M_Curves(dataset, model, split_val, mode = 'Train'):
     from lifelines.statistics import logrank_test
     results = logrank_test(T_low, T_high, E_low, E_high)
     print("p-value %s; log-rank %s" % (results.p_value, np.round(results.test_statistic, 6)))
+
+# Set up const vals
+LEARNING_RATE = 0.01  
+WEIGHT_DECAY = 0.01
+EPOCHS = 5 # Total number of epochs
+L1_WEIGHT = 0.001
+SCHEDULER = None
+BATCH_SIZE = 10 #Reduce further and allow larger files
+NUM_BATCHES = 10_000
+NUM_LOGS = 50 # How many times in the training loss is stored
+P = 1
+SHUFFLE_NET = True #Select what feature set to use
+VALIDATION = True
+NORMALIZE = False
+CENSORING = True
+FRAC_TRAIN = 0.8
+CONCORD_TRACK = True
+VARIABLES = 'OS'
+TIME_VAR = VARIABLES + '.time'
+USE_CUDA = torch.cuda.is_available()
+
+if __name__ == '__main__':
+    device = {True:'cuda:0',False:'cpu'}[USE_CUDA] 
+
+    import pandas as pd
+    # This is set up to run on colab vvv
+    survival_file = 'drive/MyDrive/SlideGraph/NIHMS978596-supplement-1.xlsx'
+    cols2read = [VARIABLES,TIME_VAR]
+    TS = pd.read_excel(survival_file).rename(columns= {'bcr_patient_barcode':'ID'}).set_index('ID')  # path to clinical file
+    TS = TS[cols2read][TS.type == 'BRCA']
+    print(TS.shape)
+    #wsi_selected = 'drive/MyDrive/SlideGraph/slide_selection_final.txt'
+    #filter = np.array(pd.read_csv(wsi_selected)).ravel()
+    #Pids = np.array([p[:12] for p in filter])
+    bdir = 'drive/MyDrive/SlideGraph/Graph_feats_CC_CPU/' # path to graphs
+    if SHUFFLE_NET:
+        bdir = 'drive/MyDrive/SlideGraph/graphs_featuresresnet_cluster_08_1111ERslides/'
+    Exid = 'Slide_Graph CC_feats'
+    graphlist = glob(os.path.join(bdir, "*.pkl"))#[0:100]
+    print(len(graphlist))
+    device = 'cuda:0'
+    cpu = torch.device('cpu')
+    dataset = []
+    # Set up directory for on disk dataset
+    directory = 'Graphs'
+    try:
+        os.mkdir(directory)
+    except FileExistsError:
+        pass
+    event_and_times = {}
+    for graph in tqdm(graphlist):
+        TAG = os.path.split(graph)[-1].split('_')[0][:12]
+        #if TAG not in TS.index:
+            #continue
+        #if TAG not in Pids:
+            #continue
+        status = TS.loc[TAG,:][1]
+        event, event_time = TS.loc[TAG,:][0], TS.loc[TAG,:][1]
+        if SHUFFLE_NET:
+            G = torch.load(graph, map_location='cpu') # Seem to get an error here randomly "Transport endpoint is not connected"
+            G = Data(**G.__dict__)
+        else:
+            G = pickleLoad(graph)
+            G.to('cpu')
+        try:
+            G.y = toTensorGPU([int(status)], dtype=torch.long, requires_grad = False)
+        except ValueError:
+            continue
+        W = radius_neighbors_graph(toNumpy(G.coords), 1500, mode="connectivity",include_self=False).toarray()
+        g = toGeometricWW(toNumpy(G.x),W,toNumpy(G.y))
+        g.coords = G.coords
+        g.event = toTensor(event)
+        g.e_time = toTensor(event_time)
+        event_and_times[TAG] = (event,event_time)
+        #dataset.append(G)
+        torch.save(g,'Graphs/'+TAG+'.g') #Need to save to appropriate location
+    if NORMALIZE: #Need to make this an online mean and stdev calc.
+        GN = []
+        for graph in dataset:
+            GN.append(G.x)
+        GN = torch.cat(GN)
+        Gmean, Gstd = torch.mean(GN,dim=0)+1e-10, torch.std(GN,dim=0)+1e-10
+        GN = None #Free up memory
+        for G in dataset:
+            G.x = (G.x - Gmean)/Gstd
+
+    num_graphs = len(os.listdir(directory))
+    print(num_graphs)
+    print(len(event_and_times))
+    #Y = np.array([float(G.y) for G in dataset])
+    # Split data and find paris for each 75% train 25% test
+    # Will look at validation later
+    if num_graphs != len(event_and_times):
+        raise ValueError("Inconsistent data values")
+
+    #Ensure the pfi_dataset and the graphs are aligned
+    num_train = math.floor(0.75 * len(event_and_times))
+    num_test = len(event_and_times) - num_train
+
+    if CENSORING:
+        event_and_times = censor_data(event_and_times)
+
+    train_dataset, test_dataset = dict_split(event_and_times, 'Graphs', 0.75, 0.25)
+    # Run pair finding over the given dictionaries
+    train_pairs_list = new_pair_find(train_dataset)
+    test_pairs_list = new_pair_find(test_dataset)
+
+    print('Total number of examples: ' + str(len(event_and_times)))
+    print('Number of training examples: ' + str(len(train_dataset)))
+    print('Number of test examples: ' +str(len(test_dataset)))
+    print('Number of valid pairs for training: ' + str(len(train_pairs_list)))
+    print('Number of valid pairs for testing: ' + str(len(test_pairs_list)))
+
+    #Load in a graph for the model parameters
+    graph = torch.load(directory + '/TCGA-3C-AALI.g')
+
+    #Set up model and optimizer
+    model = GNN(dim_features=graph.x.shape[1], dim_target = 1, layers = [32,16,8],
+                dropout = 0.0, pooling = 'mean', conv='GINConv', aggr = 'max')
+    # Have changed dataset[0].x.shpae[1] to graph.x.shape[1]
+    model = model.to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+
+    loss_values, concordances = training_loop(model,train_pairs_list,test_pairs_list,num_batches=NUM_BATCHES,num_logs=NUM_LOGS)
+
+    if CONCORD_TRACK:
+        concord_plot(concordances)
